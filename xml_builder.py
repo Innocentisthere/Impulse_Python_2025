@@ -10,6 +10,7 @@ class XmlBuilder:
         self.classes = self.root.findall("Class")
         self.aggregations = self.root.findall("Aggregation")
         self.new_root = None
+        self.meta: list = []
 
     def find_root_class(self) -> ET.Element | None:
         """Находит корневой класс по атрибуту isRoot="true" """
@@ -29,7 +30,7 @@ class XmlBuilder:
                 return cls
         return None
 
-    def create_element_with_attributes(self, element: ET.Element) -> ET.Element:
+    def create_element_w_attributes(self, element: ET.Element) -> ET.Element:
         """Создает новый элемент с атрибутами"""
         new_element = ET.Element(element.attrib.get("name"))
         new_element.text = " "
@@ -41,17 +42,17 @@ class XmlBuilder:
 
         return new_element
 
-    def process_aggregations(self):
+    def process_aggregations_config_xml(self):
         """Обрабатывает все агрегации и строит структуру XML"""
         root_class = self.find_root_class()
 
-        self.new_root = self.create_element_with_attributes(root_class)
+        self.new_root = self.create_element_w_attributes(root_class)
 
         for agg in self.aggregations:
             source_name = agg.attrib.get("source")
             target_name = agg.attrib.get("target")
             source_class = self.find_class_by_name(source_name)
-            new_el = self.create_element_with_attributes(source_class)
+            new_el = self.create_element_w_attributes(source_class)
 
             if target_name == self.new_root.tag:
                 self.new_root.append(new_el)
@@ -60,54 +61,82 @@ class XmlBuilder:
                 if target_elements:
                     target_elements[0].append(new_el)
 
-    def prettify_xml(self, element: ET.Element) -> str:
+    def prettify_meta_xml(self, element: ET.Element) -> str:
         """Форматирует XML с отступами"""
         rough_string = ET.tostring(element, 'utf-8')
         reparsed = minidom.parseString(rough_string)
         pretty_xml = reparsed.toprettyxml(indent="  ")
         return '\n'.join([line for line in pretty_xml.split('\n') if line.strip()])
 
-    def build(self, output_file: str):
+    def build_config_xml(self, output_file: str):
         """Основной метод для построения и сохранения XML"""
-        self.process_aggregations()
+        self.process_aggregations_config_xml()
 
-        pretty_xml = self.prettify_xml(self.new_root)
+        pretty_xml = self.prettify_meta_xml(self.new_root)
 
         with open(output_file, "w", encoding="utf-8") as f:
             f.write(pretty_xml)
 
-    def build_meta_json(self):
-        meta = []
-        root_class_name = self.find_root_class().attrib.get("name")
+    def get_dict_from_metalist(self, meta_lst: list, name: str):
+        for dict in meta_lst:
+            if dict["class"] == name:
+                return dict
+        return None
 
+    def collect_attrs_and_parameters(self, obj=None, isRoot=False):
+        new_dict = dict()
 
-        for agg in self.aggregations:
-            new_dict = dict()
-            source_name = agg.attrib.get("source")
-            target_name = agg.attrib.get("target")
+        if isRoot:
+            source_class = self.find_root_class()
+            inner_attrs = source_class.attrib
+        else:
+            source_name = obj.attrib.get("source")
+            target_name = obj.attrib.get("target")
             source_class = self.find_class_by_name(source_name)
+            inner_attrs = source_class.attrib | obj.attrib
 
-            inner_attrs = source_class.attrib | agg.attrib
-            for key, value in inner_attrs.items():
-                if key == "name":
-                    new_dict["class"] = value
-                elif key in ["source", "target", "targetMultiplicity"]:
-                    continue
-                elif key == "sourceMultiplicity":
-                    if value == "1":
-                        new_dict["max"] = 1
-                        new_dict["min"] = 1
-                    else:
-                        min, max = value.split("..")
-                        new_dict["max"] = max
-                        new_dict["min"] = min
+        source_class_attrs = self.get_element_attributes(source_class)
+        for key, value in inner_attrs.items():
+            if key == "name":
+                new_dict["class"] = value
+            elif key in ["source", "target", "targetMultiplicity"]:
+                continue
+            elif key == "sourceMultiplicity":
+                if value == "1":
+                    new_dict["max"] = "1"
+                    new_dict["min"] = "1"
                 else:
-                    new_dict[key] = value
+                    min, max = value.split("..")
+                    new_dict["max"] = max
+                    new_dict["min"] = min
+            elif key == "isRoot":
+                if key == "true":
+                    new_dict[key] = True
+                else:
+                    new_dict[key] = False
+            else:
+                new_dict[key] = value
 
-            
-            
-            print(new_dict)
+        new_dict["parameters"] = []
 
+        for attr in source_class_attrs:
+            name, type = attr.attrib.get("name"), attr.attrib.get("type")
+            new_parameter = {"name": name, "type": type}
+            new_dict["parameters"].append(new_parameter)
+        if not isRoot:
+            target_dict = self.get_dict_from_metalist(self.meta, target_name)
+            new_parameter = {"name": source_name, "type": "class"}
+            target_dict["parameters"].append(new_parameter)
+
+        self.meta.append(new_dict)
+
+    def build_meta_json(self):
+        self.collect_attrs_and_parameters(isRoot=True)
+        for agg in self.aggregations:
+            self.collect_attrs_and_parameters(agg)
+
+        with open("meta.json", "w", encoding="utf-8") as f:
+            json.dump(self.meta, f, indent=4, ensure_ascii=False)
 
 
 if __name__ == "__main__":
