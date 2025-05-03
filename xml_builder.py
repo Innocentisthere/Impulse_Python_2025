@@ -4,12 +4,15 @@ import json
 
 
 class XmlBuilder:
-    def __init__(self, input_file: str):
-        self.input_xml = ET.parse(input_file)
+    def __init__(self, input_folder_path: str):
+        self.input_xml = ET.parse(input_folder_path + "/impulse_test_input.xml")
         self.root = self.input_xml.getroot()
         self.classes = self.root.findall("Class")
         self.aggregations = self.root.findall("Aggregation")
         self.new_root = None
+        self.config_json_path = input_folder_path + "/config.json"
+        self.patched_config_json_path = input_folder_path + "/patched_config.json"
+        self.delta_json_path = "delta.json"
 
     def find_root_class(self) -> ET.Element | None:
         """Находит корневой класс по атрибуту isRoot="true" """
@@ -104,12 +107,67 @@ class XmlBuilder:
                 else:
                     new_dict[key] = value
 
-            
-            
-            print(new_dict)
+    def build_delta_json(self):
+        delta = dict()
+        delta["additions"] = []
+        delta["deletions"] = []
+        delta["updates"] = []
+
+        with open(self.config_json_path, "r") as cfg_json:
+            config = json.load(cfg_json)
+        with open(self.patched_config_json_path, "r") as p_cfg_json:
+            patched_config = json.load(p_cfg_json)
+
+        for param, value in patched_config.items():
+            if "added" in param:
+                added_param = {"key": param, "value": value}
+                delta["additions"].append(added_param)
+            elif config[param] != value:
+                update__field = {"key": param,
+                                 "from": config[param],
+                                 "to": value}
+                delta["updates"].append(update__field)
+
+        for param in config:
+            if param not in patched_config:
+                delta["deletions"].append(param)
+
+        with open('delta.json', 'w') as delta_json:
+            json.dump(delta, delta_json, indent=4, ensure_ascii=False)
+
+    def export_delta_json(self):
+        with open(self.delta_json_path, "r") as delta_json:
+            delta = json.load(delta_json)
+        
+        el_to_add = delta["additions"]
+        key_to_del = delta["deletions"]
+        el_to_upd = delta["updates"]
+
+        return el_to_add, key_to_del, el_to_upd
+
+
+    def build_res_patch_json(self):
+        with open(self.config_json_path, "r") as cfg_json:
+            config = json.load(cfg_json)
+        
+        el_to_add, key_to_del, el_to_upd = self.export_delta_json()
+
+        for el_info in el_to_add:
+            config[el_info["key"]] = el_info["value"]
+        
+        for key in key_to_del:
+            del config[key]
+
+        for el_info in el_to_upd:
+            config[el_info["key"]] = el_info["to"]
+
+        with open('res_patched_config.json', 'w') as res:
+            json.dump(config, res, indent=4)
+        
 
 
 
 if __name__ == "__main__":
-    builder = XmlBuilder("input/impulse_test_input.xml")
-    builder.build_meta_json()
+    builder = XmlBuilder("input")
+    builder.build_res_patch_json()
+    # builder.build_meta_json()
