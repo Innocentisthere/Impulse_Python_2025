@@ -3,17 +3,18 @@ from xml.dom import minidom
 import json
 
 
-class XmlBuilder:
+class TelecomBuilder:
     def __init__(self, input_folder_path: str):
-        self.input_xml = ET.parse(input_folder_path)
+        self.input_xml = ET.parse(input_folder_path + "/impulse_test_input.xml")
+        self.config_json_path = input_folder_path + "/config.json"
+        self.patched_config_json_path = input_folder_path + "/patched_config.json"
+        self.delta_json_path = "out/delta.json"
         self.root = self.input_xml.getroot()
         self.classes = self.root.findall("Class")
         self.aggregations = self.root.findall("Aggregation")
         self.new_root = None
-        self.config_json_path = input_folder_path + "/config.json"
-        self.patched_config_json_path = input_folder_path + "/patched_config.json"
-        self.delta_json_path = "delta.json"
         self.meta: list = []
+        self.out_folder = "out/"
 
     def find_root_class(self) -> ET.Element | None:
         """Находит корневой класс по атрибуту isRoot="true" """
@@ -64,32 +65,18 @@ class XmlBuilder:
                 if target_elements:
                     target_elements[0].append(new_el)
 
-    def prettify_meta_xml(self, element: ET.Element) -> str:
-        """Форматирует XML с отступами"""
-        rough_string = ET.tostring(element, 'utf-8')
-        reparsed = minidom.parseString(rough_string)
-        pretty_xml = reparsed.toprettyxml(indent="  ")
-        return '\n'.join([line for line in pretty_xml.split('\n') if line.strip()])
-
-    def build_config_xml(self, output_file: str):
-        """Основной метод для построения и сохранения XML"""
-        self.process_aggregations_config_xml()
-
-        pretty_xml = self.prettify_meta_xml(self.new_root)
-
-        with open(output_file, "w", encoding="utf-8") as f:
-            f.write(pretty_xml)
-
     def get_dict_from_metalist(self, meta_lst: list, name: str):
+        """Возвращает словарь по имени класса"""
         for dict in meta_lst:
             if dict["class"] == name:
                 return dict
         return None
 
-    def collect_attrs_and_parameters(self, obj=None, isRoot=False):
+    def collect_attrs_and_parameters(self, obj=None, is_root=False):
+        """Извлекает параметры для сборки meta.json"""
         new_dict = dict()
 
-        if isRoot:
+        if is_root:
             source_class = self.find_root_class()
             inner_attrs = source_class.attrib
         else:
@@ -126,14 +113,42 @@ class XmlBuilder:
             name, type = attr.attrib.get("name"), attr.attrib.get("type")
             new_parameter = {"name": name, "type": type}
             new_dict["parameters"].append(new_parameter)
-        if not isRoot:
+        if not is_root:
             target_dict = self.get_dict_from_metalist(self.meta, target_name)
             new_parameter = {"name": source_name, "type": "class"}
             target_dict["parameters"].append(new_parameter)
 
         self.meta.append(new_dict)
 
+    def prettify_xml(self, element: ET.Element) -> str:
+        """Форматирует XML с отступами"""
+        raw_str = ET.tostring(element, 'utf-8')
+        reparsed = minidom.parseString(raw_str)
+        pretty_xml = reparsed.toprettyxml(indent="  ")
+        return '\n'.join([line for line in pretty_xml.split('\n') if line.strip()])
+
+    def export_delta_json(self):
+        """Получает данные об изменениях из delta.json"""
+        with open(self.delta_json_path, "r") as delta_json:
+            delta = json.load(delta_json)
+
+        el_to_add = delta["additions"]
+        key_to_del = delta["deletions"]
+        el_to_upd = delta["updates"]
+
+        return el_to_add, key_to_del, el_to_upd
+
+    def build_config_xml(self):
+        """Основной метод для построения и сохранения comfig.xml"""
+        self.process_aggregations_config_xml()
+
+        pretty_xml = self.prettify_xml(self.new_root)
+
+        with open(self.out_folder + "config.xml", "w", encoding="utf-8") as f:
+            f.write(pretty_xml)
+
     def build_delta_json(self):
+        """Основной метод для построения и сохранения delta.json"""
         delta = dict()
         delta["additions"] = []
         delta["deletions"] = []
@@ -158,29 +173,20 @@ class XmlBuilder:
             if param not in patched_config:
                 delta["deletions"].append(param)
 
-        with open('delta.json', 'w') as delta_json:
+        with open(self.out_folder + 'delta.json', 'w') as delta_json:
             json.dump(delta, delta_json, indent=4, ensure_ascii=False)
 
     def build_meta_json(self):
-        self.collect_attrs_and_parameters(isRoot=True)
+        """Основной метод для построения и сохранения meta.json"""
+        self.collect_attrs_and_parameters(is_root=True)
         for agg in self.aggregations:
             self.collect_attrs_and_parameters(agg)
 
-        with open("meta.json", "w", encoding="utf-8") as f:
+        with open(self.out_folder + "meta.json", "w", encoding="utf-8") as f:
             json.dump(self.meta, f, indent=4, ensure_ascii=False)
 
-    def export_delta_json(self):
-        with open(self.delta_json_path, "r") as delta_json:
-            delta = json.load(delta_json)
-
-        el_to_add = delta["additions"]
-        key_to_del = delta["deletions"]
-        el_to_upd = delta["updates"]
-
-        return el_to_add, key_to_del, el_to_upd
-
-
     def build_res_patch_json(self):
+        """Основной метод для построения и сохранения res_patched_config.json"""
         with open(self.config_json_path, "r") as cfg_json:
             config = json.load(cfg_json)
 
@@ -195,10 +201,13 @@ class XmlBuilder:
         for el_info in el_to_upd:
             config[el_info["key"]] = el_info["to"]
 
-        with open('res_patched_config.json', 'w') as res:
+        with open(self.out_folder + 'res_patched_config.json', 'w') as res:
             json.dump(config, res, indent=4)
 
 
 if __name__ == "__main__":
-    builder = XmlBuilder("input/impulse_test_input.xml")
+    builder = TelecomBuilder("input")
     builder.build_meta_json()
+    builder.build_config_xml()
+    builder.build_delta_json()
+    builder.build_res_patch_json()
